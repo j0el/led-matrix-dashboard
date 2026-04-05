@@ -1,5 +1,5 @@
 import os
-from datetime import datetime
+import time
 from math import cos, pi, radians, sin
 
 import requests
@@ -28,10 +28,10 @@ class WeatherPlugin(BasePlugin):
             "humidity": "--",
             "wind": "--",
             "wind_deg": None,
-            "updated_time": "",
-            "updated_date": "",
+            "updated": "",
             "icon_code": "01d",
             "moon_phase": None,
+            "is_night": False,
         }
 
     def refresh(self):
@@ -58,46 +58,26 @@ class WeatherPlugin(BasePlugin):
         current = data.get("current", {})
         weather_list = current.get("weather", [{}])
         daily = data.get("daily", [{}])
-
         today_daily = daily[0] if daily else {}
         tomorrow_daily = daily[1] if len(daily) > 1 else today_daily
+        icon_code = weather_list[0].get("icon", "01d")
 
-        today_temp = today_daily.get("temp", {})
-        if not isinstance(today_temp, dict):
-            today_temp = {}
-
-        tomorrow_temp = tomorrow_daily.get("temp", {})
-        if not isinstance(tomorrow_temp, dict):
-            tomorrow_temp = {}
-
-        now = datetime.now()
-        hour = now.hour
-        minute = now.minute
-        suffix = "A" if hour < 12 else "P"
-        hour12 = hour % 12
-        if hour12 == 0:
-            hour12 = 12
-
-        if minute == 0:
-            short_time = f"{hour12}{suffix}"
-        else:
-            short_time = f"{hour12}:{minute:02d}{suffix}"
+        today_temp = today_daily.get("temp", {}) if isinstance(today_daily.get("temp", {}), dict) else {}
+        tomorrow_temp = tomorrow_daily.get("temp", {}) if isinstance(tomorrow_daily.get("temp", {}), dict) else {}
 
         self.state = {
             "temp": round(current.get("temp", 0)),
             "night_temp": round(today_temp.get("night", current.get("temp", 0))),
-            "next_day_temp": round(
-                tomorrow_temp.get("day", today_temp.get("day", current.get("temp", 0)))
-            ),
+            "next_day_temp": round(tomorrow_temp.get("day", today_temp.get("day", current.get("temp", 0)))),
             "feels_like": round(current.get("feels_like", 0)),
             "desc": weather_list[0].get("main", "Unknown"),
             "humidity": current.get("humidity", "--"),
             "wind": round(current.get("wind_speed", 0)),
             "wind_deg": current.get("wind_deg"),
-            "updated_time": short_time,
-            "updated_date": now.strftime("%m/%d"),
-            "icon_code": weather_list[0].get("icon", "01d"),
+            "updated": time.strftime("%I:%M %p").lstrip("0"),
+            "icon_code": icon_code,
             "moon_phase": today_daily.get("moon_phase"),
+            "is_night": str(icon_code).endswith("n"),
         }
 
         super().refresh()
@@ -122,11 +102,11 @@ class WeatherPlugin(BasePlugin):
 
     def _load_fonts(self):
         return (
-            self._load_first_font(11),  # time/date
-            self._load_first_font(38),  # big temp
+            self._load_first_font(11),  # time
+            self._load_first_font(38),  # temp
             self._load_first_font(12),  # desc
-            self._load_first_font(10),  # bottom stats
-            self._load_first_font(9),   # small labels
+            self._load_first_font(10),  # stats
+            self._load_first_font(9),   # tiny labels
         )
 
     def _draw_sun(self, draw, cx, cy, r):
@@ -173,19 +153,8 @@ class WeatherPlugin(BasePlugin):
         for yy in [29, 35, 41]:
             draw.line((x + 4, y + yy, x + 38, y + yy), fill=(130, 130, 130), width=1)
 
-    def _moon_phase_label(self, phase):
-        if phase is None:
-            return ""
-        p = float(phase) % 1.0
-        if p < 0.05 or p > 0.95:
-            return "NEW"
-        if 0.40 <= p <= 0.60:
-            return "FULL"
-        if p < 0.5:
-            return "WAX"
-        return "WAN"
-
-    def _draw_moon(self, draw, cx, cy, r, phase, label_font):
+    def _draw_moon(self, draw, cx, cy, r, phase, fill=(230, 230, 200)):
+        # Gray backing box so it does not disappear into the black panel.
         pad = 3
         draw.rounded_rectangle(
             (cx - r - pad, cy - r - pad, cx + r + pad, cy + r + pad),
@@ -194,56 +163,31 @@ class WeatherPlugin(BasePlugin):
             outline=(90, 90, 90),
         )
 
-        fill = (230, 230, 200)
-        outline = (160, 160, 140)
+        # Bright full disc first.
         draw.ellipse((cx - r, cy - r, cx + r, cy + r), fill=fill)
 
-        if phase is not None:
-            p = float(phase) % 1.0
-            if 0.40 <= p <= 0.60:
-                draw.ellipse((cx - r, cy - r, cx + r, cy + r), outline=outline)
-            elif p < 0.05 or p > 0.95:
-                draw.ellipse((cx - r + 1, cy - r + 1, cx + r - 1, cy + r - 1), fill=(25, 25, 25))
-                draw.ellipse((cx - r, cy - r, cx + r, cy + r), outline=outline)
-            else:
-                if p < 0.5:
-                    offset = int((0.5 - p) * r * 1.2)
-                    shadow = (cx - r - offset, cy - r, cx + r - offset, cy + r)
-                else:
-                    offset = int((p - 0.5) * r * 1.2)
-                    shadow = (cx - r + offset, cy - r, cx + r + offset, cy + r)
-                draw.ellipse(shadow, fill=(25, 25, 25))
-                draw.ellipse((cx - r, cy - r, cx + r, cy + r), outline=outline)
+        p = 0.0 if phase is None else float(phase) % 1.0
 
-        label = self._moon_phase_label(phase)
-        if label:
-            draw.text((cx - 10, cy + r + 5), label, font=label_font, fill=(150, 150, 150))
-
-    def _draw_moon_icon_only(self, draw, cx, cy, r, phase):
-        fill = (230, 230, 200)
-        outline = (160, 160, 140)
-        draw.ellipse((cx - r, cy - r, cx + r, cy + r), fill=fill)
-
-        if phase is None:
-            return
-        p = float(phase) % 1.0
-        if 0.40 <= p <= 0.60:
-            draw.ellipse((cx - r, cy - r, cx + r, cy + r), outline=outline)
-            return
-        if p < 0.05 or p > 0.95:
+        if p < 0.03 or p > 0.97:
             draw.ellipse((cx - r + 1, cy - r + 1, cx + r - 1, cy + r - 1), fill=(25, 25, 25))
-            draw.ellipse((cx - r, cy - r, cx + r, cy + r), outline=outline)
+            draw.ellipse((cx - r, cy - r, cx + r, cy + r), outline=(160, 160, 140))
             return
 
-        if p < 0.5:
-            offset = int((0.5 - p) * r * 1.2)
-            shadow = (cx - r - offset, cy - r, cx + r - offset, cy + r)
-        else:
-            offset = int((p - 0.5) * r * 1.2)
-            shadow = (cx - r + offset, cy - r, cx + r + offset, cy + r)
+        if 0.47 <= p <= 0.53:
+            draw.ellipse((cx - r, cy - r, cx + r, cy + r), outline=(160, 160, 140))
+            return
 
-        draw.ellipse(shadow, fill=(25, 25, 25))
-        draw.ellipse((cx - r, cy - r, cx + r, cy + r), outline=outline)
+        waxing = p < 0.5
+        fullness = p * 2 if waxing else (1 - p) * 2
+        shadow_offset = max(1, int((1 - fullness) * r * 1.7))
+
+        if waxing:
+            shadow_box = (cx - r - shadow_offset, cy - r, cx + r - shadow_offset, cy + r)
+        else:
+            shadow_box = (cx - r + shadow_offset, cy - r, cx + r + shadow_offset, cy + r)
+
+        draw.ellipse(shadow_box, fill=(25, 25, 25))
+        draw.ellipse((cx - r, cy - r, cx + r, cy + r), outline=(160, 160, 140))
 
     def _draw_condition_icon(self, draw, icon_code, x, y):
         code = str(icon_code or "01d")
@@ -252,14 +196,14 @@ class WeatherPlugin(BasePlugin):
 
         if main == "01":
             if is_night:
-                self._draw_moon_icon_only(draw, x + 18, y + 18, 11, 0.15)
+                self._draw_moon(draw, x + 18, y + 18, 11, 0.15)
             else:
                 self._draw_sun(draw, x + 20, y + 21, 10)
         elif main in {"02", "03", "04"}:
             if main == "02" and not is_night:
                 self._draw_sun(draw, x + 13, y + 12, 6)
             elif main == "02" and is_night:
-                self._draw_moon_icon_only(draw, x + 13, y + 12, 7, 0.15)
+                self._draw_moon(draw, x + 13, y + 12, 7, 0.15)
             self._draw_cloud(draw, x + 2, y + 10)
         elif main in {"09", "10"}:
             self._draw_rain(draw, x + 1, y + 7)
@@ -276,7 +220,9 @@ class WeatherPlugin(BasePlugin):
         if deg is None:
             return
 
+        # wind_deg is FROM direction; flip so arrow points TO direction.
         angle = radians((float(deg) + 180.0) % 360.0)
+
         shaft_len = 6
         head_len = 3
         spread = radians(30)
@@ -286,6 +232,7 @@ class WeatherPlugin(BasePlugin):
         tail_x = cx - int(round(cos(angle) * 3))
         tail_y = cy - int(round(sin(angle) * 3))
 
+        # keep arrow safely off the border
         tip_x = max(2, min(tip_x, 188))
         tip_y = max(2, min(tip_y, 60))
         tail_x = max(2, min(tail_x, 188))
@@ -308,12 +255,11 @@ class WeatherPlugin(BasePlugin):
 
         draw.rectangle((0, 0, width - 1, height - 1), outline=(30, 90, 170))
 
-        date_text = self.state["updated_date"]
-        time_text = self.state["updated_time"]
-        if date_text:
-            draw.text((118, 3), date_text, font=font_time, fill=(120, 120, 120))
-        if time_text:
-            draw.text((154, 3), time_text, font=font_time, fill=(120, 120, 120))
+        updated_text = self.state["updated"]
+        if updated_text:
+            updated_bbox = draw.textbbox((0, 0), updated_text, font=font_time)
+            updated_w = updated_bbox[2] - updated_bbox[0]
+            draw.text((width - updated_w - 6, 3), updated_text, font=font_time, fill=(120, 120, 120))
 
         temp_text = f"{self.state['temp']}°"
         draw.text((8, 4), temp_text, font=font_temp, fill=(255, 220, 70))
@@ -323,18 +269,27 @@ class WeatherPlugin(BasePlugin):
             desc_text = desc_text[:8]
         draw.text((10, 41), desc_text, font=font_desc, fill=(190, 190, 190))
 
-        # Moon centered between temp and N/D temps
-        self._draw_moon(draw, 100, 27, 10, self.state.get("moon_phase"), font_tiny)
-        draw.text((128, 19), f"N {self.state['night_temp']}°", font=font_tiny, fill=(180, 180, 180))
-        draw.text((128, 31), f"D {self.state['next_day_temp']}°", font=font_tiny, fill=(180, 180, 180))
+        # Right side layout:
+        if self.state.get("is_night"):
+            # Very visible moon on a gray box.
+            moon_phase = self.state.get("moon_phase")
+            if moon_phase is not None:
+                self._draw_moon(draw, width - 74, 22, 11, moon_phase)
+            # Keep the smaller night condition icon to the right.
+            self._draw_condition_icon(draw, self.state.get("icon_code", "01n"), width - 38, 12)
 
-        self._draw_condition_icon(draw, self.state.get("icon_code", "01d"), width - 42, 12)
+            # Show tonight low / next-day high to make the night screen more useful.
+            draw.text((104, 40), f"N {self.state['night_temp']}°", font=font_stat, fill=(175, 175, 175))
+            draw.text((146, 40), f"D {self.state['next_day_temp']}°", font=font_stat, fill=(175, 175, 175))
+        else:
+            self._draw_condition_icon(draw, self.state.get("icon_code", "01d"), width - 44, 10)
 
         stats_y = 52
         draw.text((8, stats_y), f"F{self.state['feels_like']}°", font=font_stat, fill=(165, 165, 165))
         draw.text((64, stats_y), f"H{self.state['humidity']}%", font=font_stat, fill=(165, 165, 165))
         draw.text((122, stats_y), f"W{self.state['wind']}", font=font_stat, fill=(165, 165, 165))
+
+        # Arrow moved up and inward so southward arrows do not hit the border.
         self._draw_wind_arrow(draw, 178, 54, self.state.get("wind_deg"))
 
         return image
-

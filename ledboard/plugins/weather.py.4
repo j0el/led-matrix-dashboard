@@ -1,5 +1,5 @@
 import os
-from datetime import datetime
+import time
 from math import cos, pi, radians, sin
 
 import requests
@@ -28,8 +28,7 @@ class WeatherPlugin(BasePlugin):
             "humidity": "--",
             "wind": "--",
             "wind_deg": None,
-            "updated_time": "",
-            "updated_date": "",
+            "updated": "",
             "icon_code": "01d",
             "moon_phase": None,
         }
@@ -70,19 +69,6 @@ class WeatherPlugin(BasePlugin):
         if not isinstance(tomorrow_temp, dict):
             tomorrow_temp = {}
 
-        now = datetime.now()
-        hour = now.hour
-        minute = now.minute
-        suffix = "A" if hour < 12 else "P"
-        hour12 = hour % 12
-        if hour12 == 0:
-            hour12 = 12
-
-        if minute == 0:
-            short_time = f"{hour12}{suffix}"
-        else:
-            short_time = f"{hour12}:{minute:02d}{suffix}"
-
         self.state = {
             "temp": round(current.get("temp", 0)),
             "night_temp": round(today_temp.get("night", current.get("temp", 0))),
@@ -94,8 +80,7 @@ class WeatherPlugin(BasePlugin):
             "humidity": current.get("humidity", "--"),
             "wind": round(current.get("wind_speed", 0)),
             "wind_deg": current.get("wind_deg"),
-            "updated_time": short_time,
-            "updated_date": now.strftime("%m/%d"),
+            "updated": time.strftime("%I:%M %p").lstrip("0"),
             "icon_code": weather_list[0].get("icon", "01d"),
             "moon_phase": today_daily.get("moon_phase"),
         }
@@ -122,11 +107,11 @@ class WeatherPlugin(BasePlugin):
 
     def _load_fonts(self):
         return (
-            self._load_first_font(11),  # time/date
+            self._load_first_font(11),  # time
             self._load_first_font(38),  # big temp
             self._load_first_font(12),  # desc
             self._load_first_font(10),  # bottom stats
-            self._load_first_font(9),   # small labels
+            self._load_first_font(9),   # small ND row / moon label
         )
 
     def _draw_sun(self, draw, cx, cy, r):
@@ -148,13 +133,25 @@ class WeatherPlugin(BasePlugin):
     def _draw_rain(self, draw, x, y):
         self._draw_cloud(draw, x, y, fill=(165, 165, 165))
         for px, py in [(11, 30), (21, 32), (31, 30)]:
-            draw.line((x + px, y + py, x + px - 2, y + py + 7), fill=(90, 170, 255), width=1)
+            draw.line(
+                (x + px, y + py, x + px - 2, y + py + 7),
+                fill=(90, 170, 255),
+                width=1,
+            )
 
     def _draw_snow(self, draw, x, y):
         self._draw_cloud(draw, x, y, fill=(185, 185, 185))
         for px, py in [(11, 30), (21, 32), (31, 30)]:
-            draw.line((x + px - 2, y + py, x + px + 2, y + py), fill=(220, 235, 255), width=1)
-            draw.line((x + px, y + py - 2, x + px, y + py + 2), fill=(220, 235, 255), width=1)
+            draw.line(
+                (x + px - 2, y + py, x + px + 2, y + py),
+                fill=(220, 235, 255),
+                width=1,
+            )
+            draw.line(
+                (x + px, y + py - 2, x + px, y + py + 2),
+                fill=(220, 235, 255),
+                width=1,
+            )
 
     def _draw_thunder(self, draw, x, y):
         self._draw_cloud(draw, x, y, fill=(150, 150, 150))
@@ -176,7 +173,9 @@ class WeatherPlugin(BasePlugin):
     def _moon_phase_label(self, phase):
         if phase is None:
             return ""
+
         p = float(phase) % 1.0
+
         if p < 0.05 or p > 0.95:
             return "NEW"
         if 0.40 <= p <= 0.60:
@@ -196,54 +195,43 @@ class WeatherPlugin(BasePlugin):
 
         fill = (230, 230, 200)
         outline = (160, 160, 140)
-        draw.ellipse((cx - r, cy - r, cx + r, cy + r), fill=fill)
 
-        if phase is not None:
-            p = float(phase) % 1.0
-            if 0.40 <= p <= 0.60:
-                draw.ellipse((cx - r, cy - r, cx + r, cy + r), outline=outline)
-            elif p < 0.05 or p > 0.95:
-                draw.ellipse((cx - r + 1, cy - r + 1, cx + r - 1, cy + r - 1), fill=(25, 25, 25))
-                draw.ellipse((cx - r, cy - r, cx + r, cy + r), outline=outline)
-            else:
-                if p < 0.5:
-                    offset = int((0.5 - p) * r * 1.2)
-                    shadow = (cx - r - offset, cy - r, cx + r - offset, cy + r)
-                else:
-                    offset = int((p - 0.5) * r * 1.2)
-                    shadow = (cx - r + offset, cy - r, cx + r + offset, cy + r)
-                draw.ellipse(shadow, fill=(25, 25, 25))
-                draw.ellipse((cx - r, cy - r, cx + r, cy + r), outline=outline)
-
-        label = self._moon_phase_label(phase)
-        if label:
-            draw.text((cx - 10, cy + r + 5), label, font=label_font, fill=(150, 150, 150))
-
-    def _draw_moon_icon_only(self, draw, cx, cy, r, phase):
-        fill = (230, 230, 200)
-        outline = (160, 160, 140)
         draw.ellipse((cx - r, cy - r, cx + r, cy + r), fill=fill)
 
         if phase is None:
-            return
-        p = float(phase) % 1.0
-        if 0.40 <= p <= 0.60:
-            draw.ellipse((cx - r, cy - r, cx + r, cy + r), outline=outline)
-            return
-        if p < 0.05 or p > 0.95:
-            draw.ellipse((cx - r + 1, cy - r + 1, cx + r - 1, cy + r - 1), fill=(25, 25, 25))
-            draw.ellipse((cx - r, cy - r, cx + r, cy + r), outline=outline)
-            return
-
-        if p < 0.5:
-            offset = int((0.5 - p) * r * 1.2)
-            shadow = (cx - r - offset, cy - r, cx + r - offset, cy + r)
+            label = ""
         else:
-            offset = int((p - 0.5) * r * 1.2)
-            shadow = (cx - r + offset, cy - r, cx + r + offset, cy + r)
+            p = float(phase) % 1.0
 
-        draw.ellipse(shadow, fill=(25, 25, 25))
-        draw.ellipse((cx - r, cy - r, cx + r, cy + r), outline=outline)
+            # LED-friendly handling:
+            # near full => show basically full
+            if 0.40 <= p <= 0.60:
+                draw.ellipse((cx - r, cy - r, cx + r, cy + r), outline=outline)
+            # near new => mostly dark
+            elif p < 0.05 or p > 0.95:
+                draw.ellipse(
+                    (cx - r + 1, cy - r + 1, cx + r - 1, cy + r - 1),
+                    fill=(25, 25, 25),
+                )
+                draw.ellipse((cx - r, cy - r, cx + r, cy + r), outline=outline)
+            else:
+                # Much gentler shading so near-full does not collapse into a sliver
+                if p < 0.5:
+                    # waxing
+                    offset = int((0.5 - p) * r * 1.2)
+                    shadow = (cx - r - offset, cy - r, cx + r - offset, cy + r)
+                else:
+                    # waning
+                    offset = int((p - 0.5) * r * 1.2)
+                    shadow = (cx - r + offset, cy - r, cx + r + offset, cy + r)
+
+                draw.ellipse(shadow, fill=(25, 25, 25))
+                draw.ellipse((cx - r, cy - r, cx + r, cy + r), outline=outline)
+
+            label = self._moon_phase_label(phase)
+
+        if label:
+            draw.text((cx - 10, cy + r + 5), label, font=label_font, fill=(150, 150, 150))
 
     def _draw_condition_icon(self, draw, icon_code, x, y):
         code = str(icon_code or "01d")
@@ -252,6 +240,7 @@ class WeatherPlugin(BasePlugin):
 
         if main == "01":
             if is_night:
+                # smaller moon for current-condition icon only
                 self._draw_moon_icon_only(draw, x + 18, y + 18, 11, 0.15)
             else:
                 self._draw_sun(draw, x + 20, y + 21, 10)
@@ -272,11 +261,40 @@ class WeatherPlugin(BasePlugin):
         else:
             self._draw_cloud(draw, x + 2, y + 10)
 
+    def _draw_moon_icon_only(self, draw, cx, cy, r, phase):
+        fill = (230, 230, 200)
+        outline = (160, 160, 140)
+        draw.ellipse((cx - r, cy - r, cx + r, cy + r), fill=fill)
+
+        if phase is None:
+            return
+
+        p = float(phase) % 1.0
+        if 0.40 <= p <= 0.60:
+            draw.ellipse((cx - r, cy - r, cx + r, cy + r), outline=outline)
+            return
+        if p < 0.05 or p > 0.95:
+            draw.ellipse((cx - r + 1, cy - r + 1, cx + r - 1, cy + r - 1), fill=(25, 25, 25))
+            draw.ellipse((cx - r, cy - r, cx + r, cy + r), outline=outline)
+            return
+
+        if p < 0.5:
+            offset = int((0.5 - p) * r * 1.2)
+            shadow = (cx - r - offset, cy - r, cx + r - offset, cy + r)
+        else:
+            offset = int((p - 0.5) * r * 1.2)
+            shadow = (cx - r + offset, cy - r, cx + r + offset, cy + r)
+
+        draw.ellipse(shadow, fill=(25, 25, 25))
+        draw.ellipse((cx - r, cy - r, cx + r, cy + r), outline=outline)
+
     def _draw_wind_arrow(self, draw, cx, cy, deg):
         if deg is None:
             return
 
+        # OpenWeather wind_deg is FROM direction; flip so arrow points TO direction.
         angle = radians((float(deg) + 180.0) % 360.0)
+
         shaft_len = 6
         head_len = 3
         spread = radians(30)
@@ -308,12 +326,16 @@ class WeatherPlugin(BasePlugin):
 
         draw.rectangle((0, 0, width - 1, height - 1), outline=(30, 90, 170))
 
-        date_text = self.state["updated_date"]
-        time_text = self.state["updated_time"]
-        if date_text:
-            draw.text((118, 3), date_text, font=font_time, fill=(120, 120, 120))
-        if time_text:
-            draw.text((154, 3), time_text, font=font_time, fill=(120, 120, 120))
+        updated_text = self.state["updated"]
+        if updated_text:
+            updated_bbox = draw.textbbox((0, 0), updated_text, font=font_time)
+            updated_w = updated_bbox[2] - updated_bbox[0]
+            draw.text(
+                (width - updated_w - 6, 3),
+                updated_text,
+                font=font_time,
+                fill=(120, 120, 120),
+            )
 
         temp_text = f"{self.state['temp']}°"
         draw.text((8, 4), temp_text, font=font_temp, fill=(255, 220, 70))
@@ -323,12 +345,13 @@ class WeatherPlugin(BasePlugin):
             desc_text = desc_text[:8]
         draw.text((10, 41), desc_text, font=font_desc, fill=(190, 190, 190))
 
-        # Moon centered between temp and N/D temps
-        self._draw_moon(draw, 100, 27, 10, self.state.get("moon_phase"), font_tiny)
-        draw.text((128, 19), f"N {self.state['night_temp']}°", font=font_tiny, fill=(180, 180, 180))
-        draw.text((128, 31), f"D {self.state['next_day_temp']}°", font=font_tiny, fill=(180, 180, 180))
+        # Always show moon and N/D temps. Moon moved left a bit.
+        self._draw_moon(draw, 100, 23, 10, self.state.get("moon_phase"), font_tiny)
+        draw.text((118, 15), f"N {self.state['night_temp']}°", font=font_tiny, fill=(180, 180, 180))
+        draw.text((118, 27), f"D {self.state['next_day_temp']}°", font=font_tiny, fill=(180, 180, 180))
 
-        self._draw_condition_icon(draw, self.state.get("icon_code", "01d"), width - 42, 12)
+        # Always show current weather icon on the far right.
+        self._draw_condition_icon(draw, self.state.get("icon_code", "01d"), width - 42, 10)
 
         stats_y = 52
         draw.text((8, stats_y), f"F{self.state['feels_like']}°", font=font_stat, fill=(165, 165, 165))

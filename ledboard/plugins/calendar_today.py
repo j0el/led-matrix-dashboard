@@ -1,5 +1,5 @@
 import os
-from datetime import datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from PIL import Image, ImageDraw, ImageFont
@@ -17,6 +17,7 @@ class CalendarTodayPlugin(BasePlugin):
     name = "calendar"
     refresh_seconds = 300
     display_seconds = 12
+    max_lines = 6
 
     def __init__(self, app_context):
         super().__init__(app_context)
@@ -31,11 +32,7 @@ class CalendarTodayPlugin(BasePlugin):
         self.calendar_ids = self._resolve_calendar_ids(self.calendar_refs)
 
         self.state = {
-            "headline": "CALENDAR",
-            "title": "Loading...",
-            "time": "",
-            "location": "",
-            "subtitle": "",
+            "lines": [],
         }
 
     def _build_service(self):
@@ -111,33 +108,10 @@ class CalendarTodayPlugin(BasePlugin):
 
         return None, False
 
-    def _parse_event_end(self, event, tz, is_all_day):
-        end = event.get("end", {})
-
-        if "dateTime" in end:
-            dt = datetime.fromisoformat(end["dateTime"])
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=tz)
-            return dt
-
-        if "date" in end:
-            dt = datetime.fromisoformat(end["date"]).replace(tzinfo=tz)
-            return dt
-
-        start_dt, _ = self._parse_event_start(event, tz)
-        if start_dt is None:
-            return None
-
-        if is_all_day:
-            return start_dt + timedelta(days=1)
-
-        return start_dt + timedelta(hours=1)
-
-    def _fetch_events_for_calendar(self, calendar_info, time_min, time_max, max_results=20):
+    def _fetch_events_for_calendar(self, calendar_info, time_min, max_results=20):
         events = self.service.events().list(
             calendarId=calendar_info["id"],
             timeMin=time_min,
-            timeMax=time_max,
             singleEvents=True,
             orderBy="startTime",
             maxResults=max_results,
@@ -149,129 +123,88 @@ class CalendarTodayPlugin(BasePlugin):
             item["_calendar_id"] = calendar_info["id"]
         return items
 
+    def _format_time_short(self, dt):
+        hour = dt.hour
+        minute = dt.minute
+        suffix = "A" if hour < 12 else "P"
+        hour12 = hour % 12
+        if hour12 == 0:
+            hour12 = 12
+
+        if minute == 0:
+            return f"{hour12}{suffix}"
+        return f"{hour12}:{minute:02d}{suffix}"
+
+    def _truncate_to_width(self, draw, text, font, max_width):
+        bbox = draw.textbbox((0, 0), text, font=font)
+        if (bbox[2] - bbox[0]) <= max_width:
+            return text
+
+        ellipsis = "…"
+        lo = 0
+        hi = len(text)
+        best = ellipsis
+
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            candidate = text[:mid].rstrip() + ellipsis
+            width = draw.textbbox((0, 0), candidate, font=font)[2]
+            if width <= max_width:
+                best = candidate
+                lo = mid + 1
+            else:
+                hi = mid - 1
+
+        return best
+
     def refresh(self):
         tz = ZoneInfo(self.timezone)
         now = datetime.now(tz)
 
-        start_of_today = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        end_of_today = start_of_today + timedelta(days=1)
-
-        all_today_events = []
-
+        future_events = []
         for cal in self.calendar_ids:
             try:
                 items = self._fetch_events_for_calendar(
                     cal,
-                    start_of_today.isoformat(),
-                    end_of_today.isoformat(),
-                    max_results=20,
+                    now.isoformat(),
+                    max_results=15,
                 )
-                all_today_events.extend(items)
+                future_events.extend(items)
             except Exception as e:
                 print(f"[calendar] failed reading {cal['name']}: {e}")
 
-        sortable_today = []
-        for event in all_today_events:
+        sortable = []
+        for event in future_events:
             start_dt, is_all_day = self._parse_event_start(event, tz)
             if start_dt is not None:
-                sortable_today.append((start_dt, 0 if is_all_day else 1, event))
+                sortable.append((start_dt, 0 if is_all_day else 1, event, is_all_day))
 
-        sortable_today.sort(key=lambda x: (x[0], x[1]))
-        today_events = [x[2] for x in sortable_today]
+        sortable.sort(key=lambda x: (x[0], x[1]))
 
-        chosen = None
-        headline = "TODAY"
-
-        for event in today_events:
-            start_dt, is_all_day = self._parse_event_start(event, tz)
-            end_dt = self._parse_event_end(event, tz, is_all_day)
-
-            if start_dt is None or end_dt is None:
-                continue
-
-            if is_all_day:
-                if start_dt.date() <= now.date() < end_dt.date():
-                    chosen = event
-                    headline = "NOW"
-                    break
-            else:
-                if start_dt <= now < end_dt:
-                    chosen = event
-                    headline = "NOW"
-                    break
-
-        if chosen is None:
-            for event in today_events:
-                start_dt, _ = self._parse_event_start(event, tz)
-                if start_dt is not None and start_dt >= now:
-                    chosen = event
-                    headline = "TODAY"
-                    break
-
-        if chosen is None:
-            future_candidates = []
-
-            for cal in self.calendar_ids:
-                try:
-                    future = self.service.events().list(
-                        calendarId=cal["id"],
-                        timeMin=now.isoformat(),
-                        singleEvents=True,
-                        orderBy="startTime",
-                        maxResults=5,
-                    ).execute()
-
-                    items = future.get("items", [])
-                    for item in items:
-                        item["_calendar_name"] = cal["name"]
-                        item["_calendar_id"] = cal["id"]
-                        start_dt, is_all_day = self._parse_event_start(item, tz)
-                        if start_dt is not None:
-                            future_candidates.append((start_dt, 0 if is_all_day else 1, item))
-                except Exception as e:
-                    print(f"[calendar] failed future lookup for {cal['name']}: {e}")
-
-            future_candidates.sort(key=lambda x: (x[0], x[1]))
-
-            if future_candidates:
-                chosen = future_candidates[0][2]
-                headline = "NEXT"
-            else:
-                self.state = {
-                    "headline": "CALENDAR",
-                    "title": "No upcoming events",
-                    "time": "",
-                    "location": "",
-                    "subtitle": "",
-                }
-                super().refresh()
-                return
-
-        summary = chosen.get("summary", "(No title)")
-        location = chosen.get("location", "")
-
-        start_dt, is_all_day = self._parse_event_start(chosen, tz)
-        end_dt = self._parse_event_end(chosen, tz, is_all_day)
-
-        if start_dt is None:
-            time_text = ""
-            subtitle = ""
-        elif is_all_day:
-            time_text = "All day"
-            subtitle = start_dt.strftime("%a %b ").strip() + str(start_dt.day)
-        else:
-            time_text = (
-                f"{start_dt.strftime('%I:%M %p').lstrip('0')} - "
-                f"{end_dt.strftime('%I:%M %p').lstrip('0')}"
+        dedup = []
+        seen = set()
+        for start_dt, _, event, is_all_day in sortable:
+            key = (
+                event.get("id"),
+                event.get("summary", ""),
+                event.get("start", {}).get("dateTime") or event.get("start", {}).get("date"),
             )
-            subtitle = start_dt.strftime("%a %b ").strip() + str(start_dt.day)
+            if key in seen:
+                continue
+            seen.add(key)
+
+            dedup.append(
+                {
+                    "title": event.get("summary", "(No title)"),
+                    "date": start_dt.strftime("%m/%d"),
+                    "time": "" if is_all_day else self._format_time_short(start_dt),
+                }
+            )
+            if len(dedup) >= self.max_lines:
+                break
 
         self.state = {
-            "headline": headline,
-            "title": summary,
-            "time": time_text,
-            "location": location,
-            "subtitle": subtitle,
+            "lines": dedup,
         }
         super().refresh()
 
@@ -280,52 +213,55 @@ class CalendarTodayPlugin(BasePlugin):
         draw = ImageDraw.Draw(image)
 
         try:
-            font_head = ImageFont.truetype(
-                "/System/Library/Fonts/Supplemental/Arial.ttf", 12
-            )
-            font_title = ImageFont.truetype(
-                "/System/Library/Fonts/Supplemental/Arial.ttf", 15
-            )
-            font_med = ImageFont.truetype(
-                "/System/Library/Fonts/Supplemental/Arial.ttf", 11
-            )
-            font_small = ImageFont.truetype(
-                "/System/Library/Fonts/Supplemental/Arial.ttf", 10
-            )
+            font_row = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial.ttf", 12)
+            font_meta = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial.ttf", 11)
         except Exception:
-            font_head = ImageFont.load_default()
-            font_title = ImageFont.load_default()
-            font_med = ImageFont.load_default()
-            font_small = ImageFont.load_default()
+            font_row = ImageFont.load_default()
+            font_meta = ImageFont.load_default()
 
         draw.rectangle((0, 0, width - 1, height - 1), outline=(40, 100, 40))
 
-        draw.text((4, 3), self.state["headline"], font=font_head, fill=(120, 255, 140))
+        lines = self.state.get("lines", [])
+        if not lines:
+            draw.text((6, 24), "No upcoming events", font=font_row, fill=(190, 190, 190))
+            return image
 
-        subtitle = self.state.get("subtitle", "")
-        if subtitle:
-            subtitle_bbox = draw.textbbox((0, 0), subtitle, font=font_small)
-            subtitle_w = subtitle_bbox[2] - subtitle_bbox[0]
+        row_y = 2
+        row_step = 10
+        time_right_x = width - 6
+        date_w = 28
+        gap = 4
+
+        for item in lines[: self.max_lines]:
+            date_text = item.get("date", "")
+            time_text = item.get("time", "")
+            title = item.get("title", "")
+
+            time_w = 0
+            if time_text:
+                bbox = draw.textbbox((0, 0), time_text, font=font_meta)
+                time_w = bbox[2] - bbox[0]
+                draw.text(
+                    (time_right_x - time_w, row_y),
+                    time_text,
+                    font=font_meta,
+                    fill=(255, 210, 80),
+                )
+
+            date_x = time_right_x - time_w - gap - date_w
             draw.text(
-                (width - subtitle_w - 6, 4),
-                subtitle,
-                font=font_small,
-                fill=(120, 120, 120),
+                (date_x, row_y),
+                date_text,
+                font=font_meta,
+                fill=(150, 150, 150),
             )
 
-        title = self.state.get("title", "")
-        if len(title) > 34:
-            title = title[:33] + "…"
-        draw.text((6, 19), title, font=font_title, fill=(235, 235, 235))
+            title_max_right = date_x - gap
+            title_max_width = max(10, title_max_right - 6)
+            title = self._truncate_to_width(draw, title, font_row, title_max_width)
 
-        time_text = self.state.get("time", "")
-        draw.text((6, 39), time_text, font=font_med, fill=(255, 210, 80))
-
-        location = self.state.get("location", "")
-        if location:
-            if len(location) > 22:
-                location = location[:21] + "…"
-            draw.text((92, 39), location, font=font_small, fill=(170, 170, 170))
+            draw.text((6, row_y), title, font=font_row, fill=(235, 235, 235))
+            row_y += row_step
 
         return image
 
