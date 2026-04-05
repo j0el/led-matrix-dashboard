@@ -1,4 +1,6 @@
+
 import os
+import re
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -157,6 +159,18 @@ class CalendarTodayPlugin(BasePlugin):
 
         return best
 
+    def _clean_title(self, title):
+        title = str(title or "")
+        title = re.sub(r"return with\s+", "", title, flags=re.IGNORECASE)
+        replacements = [
+            (r"\b[Bb]irthday\b", "b'day"),
+            (r"\b[Aa]nniversary\b", "anniv"),
+        ]
+        for pattern, replacement in replacements:
+            title = re.sub(pattern, replacement, title)
+        title = " ".join(title.split())
+        return title.strip()
+
     def refresh(self):
         tz = ZoneInfo(self.timezone)
         now = datetime.now(tz)
@@ -195,7 +209,7 @@ class CalendarTodayPlugin(BasePlugin):
 
             dedup.append(
                 {
-                    "title": event.get("summary", "(No title)"),
+                    "title": self._clean_title(event.get("summary", "(No title)")),
                     "date": start_dt.strftime("%m/%d"),
                     "time": "" if is_all_day else self._format_time_short(start_dt),
                 }
@@ -248,7 +262,9 @@ class CalendarTodayPlugin(BasePlugin):
                     fill=(255, 210, 80),
                 )
 
-            date_x = time_right_x - time_w - gap - date_w
+            bbox = draw.textbbox((0, 0), date_text, font=font_meta)
+            actual_date_w = bbox[2] - bbox[0]
+            date_x = time_right_x - time_w - gap - actual_date_w
             draw.text(
                 (date_x, row_y),
                 date_text,
@@ -264,4 +280,3 @@ class CalendarTodayPlugin(BasePlugin):
             row_y += row_step
 
         return image
-
